@@ -1,0 +1,60 @@
+
+name: Sync AWS S3 to GitHub
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: s3-to-github-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-north-1
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Download S3 files
+        run: |
+          mkdir -p s3-mirror
+          aws s3 sync s3://aws-suyog-docs s3-mirror/ \
+            --only-show-errors
+
+      - name: Check file sizes
+        run: |
+          oversized=$(find s3-mirror -type f -size +100M -print -quit)
+          if [ -n "$oversized" ]; then
+            echo "::error::File exceeds GitHub's regular Git file limit: $oversized"
+            exit 1
+          fi
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A -- s3-mirror/
+
+          if git diff --cached --quiet; then
+            echo "No changes detected."
+          else
+            git commit -m "Sync S3 bucket snapshot"
+            git push
+          fi
